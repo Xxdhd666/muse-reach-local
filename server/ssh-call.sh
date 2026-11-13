@@ -1,22 +1,24 @@
-#!/bin/bash
-# ssh-call.sh — 云端经中转服务器跳进笔记本，执行一条 PowerShell 命令（模板）
-#
-# 用法：./ssh-call.sh 'Get-Date'
-# 链路：本机 --(ssh -A，钥匙转发)--> 中转服务器 --(ssh -p 2203)--> 笔记本 127.0.0.1
-#
-# 注意：命令里不要带单引号和双引号（路径用 Join-Path 和变量拼），
-# 这是两跳 SSH 传命令的固有限制。
-#
-# 全部占位可用环境变量覆盖，也可以直接改下面的默认值。
+#!/usr/bin/env bash
+# Cloud: uses ~/.ssh/config aliases with ProxyJump, never agent forwarding.
+# stdin/command are encoded as data; quotes and Unicode survive both hops.
 set -euo pipefail
-
-RELAY_HOST="${RELAY_HOST:-YOUR_SERVER_IP}"
-RELAY_USER="${RELAY_USER:-YOUR_SERVER_USER}"
-RELAY_PORT="${RELAY_PORT:-2203}"
-LAPTOP_USER="${LAPTOP_USER:-YOUR_WINDOWS_USER}"
-KEY_FILE="${KEY_FILE:-$HOME/.ssh/id_ed25519}"
-
-CMD="${1:-whoami}"
-
-ssh -A -i "$KEY_FILE" -o UserKnownHostsFile="$HOME/.ssh/known_hosts" "$RELAY_USER@$RELAY_HOST" \
-  "ssh -p $RELAY_PORT -o UserKnownHostsFile=/tmp/kh_lap $LAPTOP_USER@127.0.0.1 '$CMD'"
+target="${REACH_SSH_ALIAS:-reach-laptop}"
+[[ "$target" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid SSH alias" >&2; exit 2; }
+[[ $# -eq 1 ]] || { echo "Usage: ssh-call.sh 'PowerShell command'" >&2; exit 2; }
+encoded=$(python3 - "$1" <<'PY'
+import base64,json,os,sys,uuid
+request={"id":os.environ.get("REACH_ID",str(uuid.uuid4())),"command":sys.argv[1],
+ "summary":os.environ.get("REACH_SUMMARY","Local command"),"kind":os.environ.get("REACH_KIND","exec"),
+ "files":json.loads(os.environ.get("REACH_FILES_JSON","[]")),"timeoutSeconds":int(os.environ.get("REACH_TIMEOUT","300"))}
+raw=json.dumps(request,ensure_ascii=False).encode("utf-8")
+if len(raw)>6000: raise SystemExit("Request exceeds SSH command size; upload a script and invoke it instead")
+b64=base64.b64encode(raw).decode()
+ps="$ErrorActionPreference='Stop'; & (Join-Path $env:LOCALAPPDATA 'MuseReach\\tools\\Invoke-ReachCommand.ps1') -RequestBase64 '"+b64+"'; exit $LASTEXITCODE"
+encoded=base64.b64encode(ps.encode("utf-16le")).decode()
+if len(encoded)+80>7500: raise SystemExit("Final encoded command exceeds Windows command-line limit; upload a script instead")
+print(encoded)
+PY
+)
+exec ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 \
+ -o ServerAliveInterval=15 -o ServerAliveCountMax=2 "$target" \
+ "powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded"

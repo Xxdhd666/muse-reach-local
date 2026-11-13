@@ -1,0 +1,56 @@
+name: Build and regression checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npx playwright install chromium
+      - shell: pwsh
+        run: ./scripts/check.ps1 -Browser -Publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MuseReach-win-x64
+          path: |
+            out/
+            server/
+            README.md
+            SECURITY.md
+            LICENSE
+            THIRD-PARTY-NOTICES.md
+  relay-templates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n server/ssh-call.sh server/link-poll.sh
+      - run: python3 source/tests/transport-tests.py
+      - name: Validate effective OpenSSH restrictions without starting a daemon
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          for user in reach-tunnel reach-jump; do
+            sudo /usr/sbin/sshd -T -f server/sshd-reach.conf -C "user=$user,host=localhost,addr=127.0.0.1" > "/tmp/$user.conf"
+            grep -qx 'maxsessions 0' "/tmp/$user.conf"
+            grep -qx 'allowagentforwarding no' "/tmp/$user.conf"
+          done
+          grep -qx 'allowtcpforwarding remote' /tmp/reach-tunnel.conf
+          grep -qx 'permitlisten 127.0.0.1:2203' /tmp/reach-tunnel.conf
+          grep -qx 'allowtcpforwarding local' /tmp/reach-jump.conf
+          grep -qx 'permitopen 127.0.0.1:2203' /tmp/reach-jump.conf

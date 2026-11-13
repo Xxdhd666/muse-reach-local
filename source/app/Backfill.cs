@@ -12,7 +12,6 @@ namespace MuseReach {
  public static class Backfill {
   public sealed class Entry { public int v {get;set;}=1; public string id {get;set;} public string ts {get;set;} public string kind {get;set;} public string summary {get;set;} public string[] files {get;set;} public int? exit {get;set;} public string result {get;set;}="success"; public string cmd {get;set;}=""; }
   static string Desktop()=>Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-  static string Outputs()=>Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),"Codex","2026-11-10","x-z","outputs");
   // 空模板：需要补记旧交付时，按下面格式自行添加条目。
   // id 固定（用于去重）、ts 用原交付时间、summary 以“补记：”开头。
   // 例：

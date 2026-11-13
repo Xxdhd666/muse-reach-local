@@ -1,0 +1,24 @@
+# CLOUD ~/.ssh/config. Three separate identities; private keys stay on their owner.
+Host reach-relay
+    HostName YOUR_SERVER_IP
+    Port 22
+    User reach-jump
+    IdentityFile ~/.ssh/reach_jump
+    IdentitiesOnly yes
+    ForwardAgent no
+    BatchMode yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile ~/.ssh/known_hosts
+
+Host reach-laptop
+    HostName 127.0.0.1
+    Port 2203
+    User YOUR_WINDOWS_USER
+    ProxyJump reach-relay
+    IdentityFile ~/.ssh/reach_windows
+    IdentitiesOnly yes
+    ForwardAgent no
+    BatchMode yes
+    StrictHostKeyChecking yes
+    HostKeyAlias reach-laptop
+    UserKnownHostsFile ~/.ssh/known_hosts

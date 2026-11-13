@@ -1,105 +1,74 @@
-# 服务器侧搭建说明
+# 部署 SSH 通道和本机执行器
 
-这台服务器是干什么的：只当中转，不存业务数据，不跑 Reach 本身。
+这份文档描述模板部署，程序不会自动执行这些步骤。建议先在测试账户／服务器验证，再迁移现用链路；保留现有 SSH 管理会话和配置备份。
 
-- 笔记本主动向服务器打一条反向 SSH 隧道，把本机 SSH 挂到服务器的回环端口上；
-- 云端先 SSH 到服务器，再从服务器跳进笔记本；
-- 笔记本不需要公网 IP、不开入站端口，断线 10 秒重连。
+## 身份与链路
 
-这套东西是通用的：任何一台能装 OpenSSH 的 Linux 服务器都能当这个中转，
-不绑定哪家云厂商。下面以 Ubuntu + OpenSSH 为例。
-
-## 占位清单
-
-模板里出现的所有占位，搭建时按你的环境替换：
-
-| 占位 | 含义 |
-| --- | --- |
-| `YOUR_SERVER_IP` | 中转服务器的公网地址 |
-| `YOUR_SERVER_USER` | 中转服务器上的用户名（建议专用用户，不要用 root） |
-| `YOUR_WINDOWS_USER` | 笔记本上的 Windows 用户名 |
-| `YOUR_PUBLIC_KEY_HERE` | 笔记本上生成的 SSH 公钥内容 |
-| `2203` | 反向隧道在服务器回环上监听的端口（可改，改完三处要一致） |
-
-## 准备
-
-- 一台 24 小时在线的 Linux 服务器，一个公网 IP
-- 服务器上装好 OpenSSH server，22 端口对笔记本开放
-- 笔记本上装好 OpenSSH server，只听 `127.0.0.1`、只认钥匙登录
-
-## 步骤
-
-### 1. 服务器上建专用用户
-
-```bash
-adduser YOUR_SERVER_USER
+```text
+笔记本 reach-tunnel 专用私钥 → 中转 reach-tunnel 账户：仅反向转发
+云端 reach-jump 专用私钥    → 中转 reach-jump 账户：仅到回环端口的跳转
+云端 Windows 专用私钥      → Windows 非管理员账户：执行命令
 ```
 
-### 2. 登记限制式钥匙
+三把密钥、两个中转账户，不共用。云端不持有笔记本隧道私钥；中转不持有 Windows 私钥。两类中转账户均不允许会话／命令，云端使用 ProxyJump，不使用 agent forwarding。
 
-笔记本上生成钥匙对：
+## 1. 中转服务器
+
+准备 Linux/OpenSSH 和两个专用账户 `reach-tunnel`、`reach-jump`。将对应公钥分别写入各账户的 `~/.ssh/authorized_keys`，使用 `authorized_keys.example` 的对应行。目录权限 700、文件 600，属主正确。
+
+将 `sshd-reach.conf` 内容按环境调整后放入支持 Include 的 SSH 配置目录。默认仅允许回环 `127.0.0.1:2203`。`MaxSessions 0` 才是禁止会话的关键；`no-pty` 仅禁止分配终端。不要单独复制钥匙行就认为已经限制执行权限。
+
+应用配置前运行 `sshd -t`；再用 `sshd -T -C user=reach-tunnel,host=localhost,addr=127.0.0.1` 等检查最终有效项。检查通过后由管理员按发行版方式重新加载服务，保持当前管理会话直到重新登录验证通过。
+
+必须验证：隧道账户能开指定反向转发，但不能执行 `id`、开其他反向端口或本地转发；跳转账户能转到 `127.0.0.1:2203`，但不能执行命令、跳到其他端口或开反向转发。模板测试不替代真实负面权限测试。
+
+## 2. Windows SSH
+
+安装并配置 Windows OpenSSH Server，建议仅监听 `127.0.0.1`，禁用密码及交互式密码认证。把云端 Windows 公钥登记给选定的非管理员 Windows 账户。普通账户与管理员的 authorized_keys 路径／ACL 不同，应按微软 OpenSSH 文档设置；本模板不替你改变这些配置。
+
+用可信渠道核对中转和 Windows SSH 主机公钥指纹，再保存到各调用端 known_hosts。不要把未经核对的 ssh-keyscan 输出当作身份验证。脚本使用严格主机检查，缺少或变化的主机密钥会失败。
+
+## 3. 安装当前用户任务与执行器
+
+在仓库的 `server` 目录，以将要登录 Windows SSH 的同一用户执行；不要作为 SYSTEM 安装。该命令只在你主动运行时安装，不由应用自动触发。
 
 ```powershell
-ssh-keygen -t ed25519
+.\Install-Reach.ps1 -RelayHost '你的服务器IP或域名' `
+  -TunnelKey 'C:\Users\你的用户\.ssh\reach_tunnel' `
+  -KnownHosts 'C:\Users\你的用户\.ssh\known_hosts' -WhatIf
+
+# 核对预览后，移除 -WhatIf 才实际安装。
 ```
 
-把生成的公钥（`id_ed25519.pub` 里 `ssh-ed25519` 开头的一整行）按
-`authorized_keys.example` 的格式，追加到服务器上该用户的
-`~/.ssh/authorized_keys`，并把 `YOUR_PUBLIC_KEY_HERE` 换成公钥内容。
+默认 `RelayUser=reach-tunnel`、`RelayPort=22`、`ListenPort=2203`、`LocalPort=22`；可用同名参数修改。脚本复制执行器、隧道脚本，生成 `relay-tunnel.json`，备份并写入本机 `connection.json`，注册当前用户登录时的有限权限任务。**安装后不立即启动任务**。确认配置后手动启动 `muse-reach-tunnel`。
 
-权限必须对，否则钥匙会被拒：
+任务使用当前登录用户的 profile 和密钥，不要求无人登录时运行。隧道绑定显式回环；转发失败即退出，断线等待 10 秒重试。主机不可达／握手阻塞还受 SSH 保活与连接阶段耗时影响，不承诺固定 10 秒恢复。
+
+若从旧版 SYSTEM 任务迁移，先备份旧任务；同名任务可能需管理员权限替换。应用控制只接受当前用户、有限权限、动作确实执行配置脚本的任务；不满足时会拒绝，而不会强行结束其他 SSH。
+
+## 4. 云端调用
+
+复制 `ssh-config.example` 到云端 SSH 配置中，填写中转地址、Windows 用户和各自私钥路径；核对两端主机密钥。中转只承担加密流量跳转，不需要 Windows 私钥，也不需要 agent forwarding。
 
 ```bash
-chmod 700 ~/.ssh
-chmod 600 ~/.ssh/authorized_keys
+chmod +x server/ssh-call.sh
+server/ssh-call.sh 'Get-Date'
+
+REACH_SUMMARY='查看桌面文件' REACH_TIMEOUT=30 \
+  server/ssh-call.sh 'Get-ChildItem ([Environment]::GetFolderPath("Desktop"))'
 ```
 
-登记条目是限制式的：只允许反向隧道端口转发，不给 shell、不给
-agent/X11 转发。`permitlisten` 只放行 `127.0.0.1:2203`，隧道只能挂
-在回环上，外网扫不到。
+默认 SSH 别名为 `reach-laptop`，可通过 `REACH_SSH_ALIAS` 修改。`REACH_ID` 指定重试身份；同 ID 不重复执行，重复调用返回 75。`REACH_KIND` 可为 exec/file-create/file-modify/file-delete/file-read，`REACH_FILES_JSON` 是文件完整路径的 JSON 数组；这些是调用者声明，不是自动文件追踪。
 
-### 3. 笔记本上装反向隧道
+命令与请求使用 JSON／Base64／UTF-16 编码，保留单双引号和 Unicode。按最终 Windows 命令行长度拒绝过大请求；复杂任务先传脚本再调用。远端命令默认 300 秒超时，1–900 秒可调，超时返回 124。成功表示命令进程退出 0，不代表业务结果一定正确。
 
-把 `reverse-tunnel.ps1` 放到笔记本固定位置，填好文件头的占位，
-再建计划任务 `muse-reach-tunnel`（开机启动、SYSTEM 身份）：
+原始命令默认不入日志，stdout/stderr 经 SSH 返回。不要把密钥等秘密写进摘要和文件名。临时命令脚本在正常退出后删除，强制终止或断电可能遗留；同账户可读本机目录，执行器不是秘密存储器。
 
-```powershell
-schtasks /Create /TN muse-reach-tunnel `
-  /TR "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Tools\muse-reach-tunnel\reverse-tunnel.ps1" `
-  /SC ONLOGON /RU SYSTEM /F
-```
+## 5. 记录、恢复与停止
 
-任务只负责拉起一次，重连由脚本自带的 10 秒循环负责。
-
-### 4. 云端验证两跳调用
-
-把 `ssh-call.sh` 放到云端，填好占位，跑一条命令验证：
-
-```bash
-./ssh-call.sh 'whoami'
-```
-
-应返回笔记本上的用户名。连不上时按下面排障顺序查。
-
-### 5. （可选）轮询消息收件箱
-
-把 `link-poll.sh` 挂到你自己的轮询机制上（比如每 5 秒跑一次），
-它每轮到笔记本的收件箱取新消息、写回执、把消息打印出来交给 Agent。
-
-## 排障
-
-- **隧道端口在服务器上能看到监听，但连不上**：先看笔记本是不是
-  关机或断网，再看计划任务在不在跑。端口在不代表隧道是活的——
-  假死时端口也在监听，两侧 SSH 却卡在握手。恢复办法：杀掉服务器上
-  持有该监听端口的 sshd 会话进程，笔记本的计划任务 10 秒内会自己
-  重新注册。
-- **钥匙被拒**：先查 `~/.ssh` 700、`authorized_keys` 600、文件属主
-  对不对，再查限制选项拼写（`permitlisten` 的引号和端口）。
-- **云端报 host key 验证失败**：先确认是钥匙没带上还是主机钥匙真变了，
-  不要直接删 known_hosts；核对服务器主机钥匙指纹再决定。
-
-## 安全
-
-- 中转服务器不存业务数据；登记的钥匙只有隧道权限，没有 shell。
-- 随时断开，三种任选：停笔记本上的计划任务、停服务器上的 sshd、
-  或删 `authorized_keys` 里的那一行。
+- 请求先创建一次性 ID 标记，再追加 started 记录，才启动命令；开始记账失败则不执行。
+- 完成后同 ID 追加 outcome。断电、杀进程、最终记账失败可能只有开始记录，界面显示等待或未确认；先检查实际结果，不能盲目换 ID 重试破坏性任务。
+- 心跳是最近一次执行器到达的时间，不是持续云端在线证明；空闲过期不等于假死。
+- `link-poll.sh` 已明确停用：当前没有完整的消息生产者／持久消费协议，不再先写接收回执造成消息丢失。
+- 从 Reach 请求断开时先验证任务身份，再停止指定任务、清理已核实的隧道进程；重新连接会先停止再启动。任务操作返回与实际网络恢复分开显示。
+- 当前 Windows 账户仍可能直接 SSH 绕过账本；需要不可绕过的授权和审计时，应另设受限网关／专用执行账户，不能只依赖这个界面。

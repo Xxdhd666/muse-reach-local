@@ -1,15 +1,16 @@
 using MuseReach;using System.Text.Json;
+try {
 var dir=Path.Combine(Path.GetTempPath(),"Reach-v10-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir);int n=0;void Check(bool b,string s){if(!b)throw new Exception(s);Console.WriteLine("PASS "+s);n++;}string Row(object x)=>JsonSerializer.Serialize(x);var now=DateTimeOffset.Now;var file=Path.Combine(dir,"hello.txt");File.WriteAllText(file,"test");
 try{var store=new ConsoleData(dir);Check(store.ReadOperations().Count==0,"missing ops is empty");
 var rows=new[]{Row(new{v=1,id="a",ts=now.AddDays(-2),kind="file-create",summary="创建文件",files=new[]{file},result="success",exit=0,cmd="touch redacted"}),"{bad",Row(new{v=1,id="b",ts=now,kind="file-read",summary="读取文件",files=new[]{file},result="unknown",exit=0}),Row(new{v=1,id="c",ts=now,kind="exec",summary="未声明文件",files=new[]{file},result="failure"}),Row(new{summary="缺字段"})};File.WriteAllText(Path.Combine(dir,"ops.jsonl"),string.Join("\n",rows)+"\n{\"v\":");var ops=store.ReadOperations();Check(ops.Count==4,"malformed and partial lines skipped with missing fields tolerated");Check(ops.Single(x=>x.id=="b").result=="unknown","exit zero does not turn unknown into success");Check(ops.Single(x=>x.id=="c").files.Length==0,"exec file list not used for work files");Check(ops.Single(x=>x.id=="a").cmd=="touch redacted","command preserved for collapsed details");
 File.AppendAllText(Path.Combine(dir,"ops.jsonl"),"1,\"id\":\"later\",\"result\":\"success\"}\n");Check(store.ReadOperations().Count==5,"partial tail reread after completed append");
 var files=store.WorkFiles(store.ReadOperations());Check(files.Count==1&&files[0].kind=="file-read","file aggregation uses latest timestamp");Check(files[0].state=="在","file existence checked");File.Delete(file);Check(store.WorkFiles(store.ReadOperations())[0].state=="已不在","missing file remains in records");Check(store.WorkFiles(store.ReadOperations()).Count==1,"missing record not deleted");
 Check(ConsoleData.FilterFiles(files,"today",now).Count==1,"today filter");Check(ConsoleData.FilterFiles(files,"week",now.AddDays(8)).Count==0,"seven day filter");
-var p=new ProbeResult{tcpEstablished=true,service="运行中"};Check(ConsoleData.Health(p,null,now).label!="通道正常","missing heartbeat never proves Muse reachable");
-Check(ConsoleData.Health(p,now.AddSeconds(-89),now).label=="通道正常","fresh heartbeat and local evidence");Check(ConsoleData.Health(p,now.AddSeconds(-91),now).label=="疑似假死","stale heartbeat detects suspected stuck tunnel");Check(ConsoleData.Health(new ProbeResult{service="已停止"},now,now).label=="通道中断","local failure takes priority over heartbeat");Check(ConsoleData.Health(new ProbeResult{error="denied"},now,now).label=="状态待确认","unreadable local layer never invents outage");Check(ConsoleData.Health(p,now.AddMinutes(1),now).label!="通道正常","future heartbeat not accepted as normal");
+var p=new ProbeResult{identityVerified=true,tcpEstablished=true,service="运行中"};Check(ConsoleData.Health(p,null,now).label!="通道正常","missing heartbeat never proves Muse reachable");
+Check(ConsoleData.Health(p,now.AddSeconds(-89),now).label=="通道正常","fresh heartbeat and local evidence");Check(ConsoleData.Health(p,now.AddSeconds(-91),now).label=="本机通道正常，Muse 到达待确认","idle arrival expiry does not invent a stuck tunnel");Check(ConsoleData.Health(new ProbeResult{service="已停止"},now,now).label=="通道中断","local failure takes priority over heartbeat");Check(ConsoleData.Health(new ProbeResult{error="denied"},now,now).label=="状态待确认","unreadable local layer never invents outage");Check(ConsoleData.Health(p,now.AddMinutes(1),now).label!="通道正常","future heartbeat not accepted as normal");
 File.WriteAllText(Path.Combine(dir,"heartbeat.json"),Row(new{v=1,ts=now}));Check(store.ReadHeartbeat()==now,"heartbeat timestamp parsed");File.WriteAllText(Path.Combine(dir,"heartbeat.json"),"{");Check(store.ReadHeartbeat()==null,"partial heartbeat tolerated");
 var settings=new AppSettings();settings.SetMuseUrl("https://muse.ai/thread/abc");settings.Save(Path.Combine(dir,"settings.json"));Check(AppSettings.Load(Path.Combine(dir,"settings.json")).museStartUrl=="https://muse.ai/thread/abc","conversation URL persists");try{settings.SetMuseUrl("https://evil.invalid/thread/abc");throw new Exception("external URL accepted");}catch(ArgumentException){Check(true,"saved URL restricted to Muse HTTPS");}
-Check(ConsoleData.SourceOf(new Operation{summary="补记：旧文件"})=="已确认由 Muse 操作（补记）","backfill source label");
+Check(ConsoleData.SourceOf(new Operation{summary="补记：旧文件"})=="补记记录（来源未核验）","backfill source label");
 // v32：Muse 页加载态分档（逻辑时间模拟，不是墙钟——WinForms 计时器
 // 本机跑不了，墙钟验证见 REPORT §06）。
 Check(WebLoadingTiers.TierFor(-5)==WebLoadingTiers.Tier.Hidden,"negative elapsed clamps to Hidden");
@@ -20,8 +21,8 @@ Check(WebLoadingTiers.TierFor(2999)==WebLoadingTiers.Tier.Spinner,"2999ms is sti
 Check(WebLoadingTiers.TierFor(3000)==WebLoadingTiers.Tier.Progress,"3000ms flips to Progress");
 Check(WebLoadingTiers.WatchdogMs==60000,"watchdog is 60s without a tracked completion");
 Check(WebLoadingTiers.TierFor(0)==WebLoadingTiers.Tier.Hidden&&WebLoadingTiers.TierFor(500)==WebLoadingTiers.Tier.Hidden&&WebLoadingTiers.TierFor(1200)==WebLoadingTiers.Tier.Spinner&&WebLoadingTiers.TierFor(2500)==WebLoadingTiers.Tier.Spinner&&WebLoadingTiers.TierFor(3100)==WebLoadingTiers.Tier.Progress&&WebLoadingTiers.TierFor(59000)==WebLoadingTiers.Tier.Progress,"slow load walks Hidden(0,500)->Spinner(1200,2500)->Progress(3100,59000), never backwards");
-Check(ConsoleData.SourceOf(new Operation{summary="用户确认：这台电脑上新建了 a.txt"})=="用户确认","user-confirmed source label");
-Check(ConsoleData.SourceOf(new Operation{summary="普通操作"})=="已确认由 Muse 操作","default source label");
+Check(ConsoleData.SourceOf(new Operation{summary="用户确认：这台电脑上新建了 a.txt"})=="记录标注：用户确认","user-confirmed source label");
+Check(ConsoleData.SourceOf(new Operation{summary="普通操作"})=="操作记录（来源未核验）","default source label");
 ConsoleData.AppendOperation(dir,new Operation{id="op-test-1",ts=now,kind="file-create",summary="用户确认：这台电脑上新建了 a.txt",files=new[]{file},result="success",cmd=""});
 Check(store.ReadOperations().Any(x=>x.id=="op-test-1"),"user-confirmed operation appended");
 // v33：窄窗口自动收起（Fluent NavigationView Auto 模式；逻辑宽模拟，
@@ -82,11 +83,11 @@ Check(OsAnimations.Effective(true,true),"U on + OS on: animations on");
 Check(!OsAnimations.Effective(false,true),"U off + OS on: animations off (in-app switch governs)");
 Check(!OsAnimations.Effective(true,false),"U on + OS off: animations off (OS switch wins)");
 Check(!OsAnimations.Effective(false,false),"U off + OS off: animations off");
-Check(OsAnimations.Read(null),"no WinRT reader + no user32 on Linux: fail-open true (only the in-app switch governs)");
+Check(OsAnimations.Read(null)==(OsAnimations.ReadSpi()??true),"no WinRT reader + no user32 on Linux: fail-open true (only the in-app switch governs)");
 Check(OsAnimations.Read(()=>false)==false,"WinRT reader says off: Read returns false (WinRT is tried first)");
 Check(OsAnimations.Read(()=>true),"WinRT reader says on: Read returns true without touching SPI");
-Check(OsAnimations.Read(()=>null),"WinRT reader returns null (unreadable): falls through to SPI, still true on Linux");
-Check(OsAnimations.ReadSpi()==null,"SPI reader on Linux: null (user32.dll absent), never throws");
+Check(OsAnimations.Read(()=>null)==(OsAnimations.ReadSpi()??true),"WinRT reader returns null (unreadable): falls through to SPI, still true on Linux");
+Check(OperatingSystem.IsWindows()||OsAnimations.ReadSpi()==null,"SPI reader on Linux: null (user32.dll absent), never throws");
 // v37：托盘悬停提示里写清热键（设计参考第 19 条；纯逻辑真跑，
 // 悬停本身是 WinForms 行为，本机看不到，见 REPORT §06）。
 Check(TrayTooltip.For(true)=="Muse Reach — Ctrl+Alt+Space 随时呼出","hotkey on: tooltip is exactly 'Muse Reach — Ctrl+Alt+Space 随时呼出'");
@@ -149,9 +150,9 @@ Check(r.value && r.source=="WinRT","v40 ReadWithSource: WinRT reader says on -> 
 r = OsAnimations.ReadWithSource(()=>false);
 Check(!r.value && r.source=="WinRT","v40 ReadWithSource: WinRT reader says off -> (false, WinRT)");
 r = OsAnimations.ReadWithSource(()=>null);
-Check(r.value && r.source=="fail-open","v40 ReadWithSource: WinRT null + SPI null on Linux -> (true, fail-open)");
+Check(r.value==(OsAnimations.ReadSpi()??true) && r.source==(OsAnimations.ReadSpi().HasValue?"SPI":"fail-open"),"v40 ReadWithSource: WinRT null + SPI null on Linux -> (true, fail-open)");
 r = OsAnimations.ReadWithSource(()=>{throw new Exception("boom");});
-Check(r.value && r.source=="fail-open","v40 ReadWithSource: WinRT reader throws -> falls through to fail-open, never throws");
+Check(r.value==(OsAnimations.ReadSpi()??true) && r.source==(OsAnimations.ReadSpi().HasValue?"SPI":"fail-open"),"v40 ReadWithSource: WinRT reader throws -> falls through to fail-open, never throws");
 Check(OsAnimations.Read(()=>false)==false && OsAnimations.Read(()=>true)==true,"v40 Read still delegates to ReadWithSource (same values, source dropped)");
 var log = new OsAnimLog();
 Check(log.Next("WinRT",true,true)=="动画设置：读取路径=WinRT，系统开关=开，应用内开关=开，生效动效=开","v40 startup line: WinRT/on/user-on has all four fields");
@@ -174,3 +175,6 @@ Check(log4.Next("WinRT",false,false)=="动画设置变化：系统开关=关，�
 Check(log4.Next("WinRT",false,false)==null,"v40 no-op after a settled change writes nothing");}
 Console.WriteLine("TOTAL "+n);
 }finally{Directory.Delete(dir,true);}
+
+} catch(Exception ex) { Console.Error.WriteLine("FAIL: "+ex.Message); return 1; }
+return 0;

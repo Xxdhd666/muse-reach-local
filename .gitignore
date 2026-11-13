@@ -22,3 +22,8 @@ WebView2/
 *.zip
 native-*.json
 *.tmp
+node_modules/
+connection.json
+relay-tunnel.json
+requests/
+test-artifacts/

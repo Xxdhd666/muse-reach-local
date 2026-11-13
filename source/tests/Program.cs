@@ -1,4 +1,5 @@
 using MuseReach;using System.Drawing;
+try {
 int n=0;void Check(bool v,string name){if(!v)throw new Exception(name);Console.WriteLine("PASS "+name);n++;}
 var s=new AppSettings();
 Check(!s.sidebarCollapsed&&s.sidebarSide=="left"&&s.animationsEnabled&&s.webZoom==1,"new preference defaults");
@@ -28,11 +29,9 @@ string bdir=Path.Combine(Path.GetTempPath(),"Reach-v13-"+Guid.NewGuid().ToString
 string bfile=Path.Combine(bdir,"ops.jsonl");
 string firstLine="{\"v\":1,\"id\":\"op-1\",\"ts\":\"2026-11-11T00:43:09+08:00\",\"kind\":\"exec\",\"summary\":\"旧记录\",\"files\":[],\"exit\":null,\"result\":\"success\",\"cmd\":\"\"}";
 File.WriteAllText(bfile,firstLine+"\n{bad\n");
-int added=Backfill.Ensure(bdir);Check(added==6,"backfill appends six missing entries");
-var blines=File.ReadAllLines(bfile);Check(blines.Length==8,"original lines kept, six appended");
+int added=Backfill.Ensure(bdir);Check(added==0,"empty public backfill adds no invented deliveries");
+var blines=File.ReadAllLines(bfile);Check(blines.Length==2,"empty backfill preserves original and malformed lines");
 Check(blines[0]==firstLine,"original record byte-identical after backfill");
-Check(blines.Skip(2).All(l=>l.Contains("\"summary\":\"补记：")),"backfill summaries marked");
-Check(blines.Any(l=>l.Contains("\"id\":\"backfill-v13-writerconsole\"")&&l.Contains("\"ts\":\"2026-11-12T01:28:00+08:00\"")),"backfill keeps original delivery time");
 Check(Backfill.Ensure(bdir)==0,"second backfill is a no-op");
 Directory.Delete(bdir,true);
 // v14 watch list: no confirm/ignore any more — entries are just listed, newest first,
@@ -380,3 +379,6 @@ phs.Move(100, 138, 1f); // cursor still over close at re-activation
 pfd.Snap(phs.Hover, CaptionSegment.None);
 Check(pfd.Value(CaptionSegment.Close) == 1f && pfd.PressValue(CaptionSegment.Close) == 0f && !pfd.Animating, "re-activation restores hover instantly from the cursor position, with no press");
 Console.WriteLine("TOTAL "+n);
+
+} catch(Exception ex) { Console.Error.WriteLine("FAIL: "+ex.Message); return 1; }
+return 0;

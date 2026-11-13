@@ -15,18 +15,34 @@ namespace MuseReach {
   public string Summary=>error!=null?"本地通道无法检查；"+error:identityVerified&&tcpEstablished?"指定隧道 TCP 已建立；Muse 接手以回执为准":tcpEstablished?"匹配服务器的 TCP 已建立；隧道归属无法核实":"未发现已建立的指定隧道 TCP；Muse 接手待确认";
  }
  public static class TunnelProbe {
-  // Existing endpoint from the handoff. Used only for comparison; never displayed or logged.
-  const string ExpectedServer="YOUR_SERVER_IP";
-  public static ProbeResult Evaluate(IEnumerable<ProcEvidence> processes,IEnumerable<TcpEvidence> sockets) {
+  // Task and process identity checks use a complete script argument, not a substring.
+  public static bool TaskActionMatches(string executable,string arguments,string script,string expectedExecutable) {
+   try {
+    if(!string.Equals(System.IO.Path.GetFullPath(executable),System.IO.Path.GetFullPath(expectedExecutable),StringComparison.OrdinalIgnoreCase))return false;
+    if(System.Text.RegularExpressions.Regex.IsMatch(arguments??"",@"(?:^|\s)-(?:Command|EncodedCommand|c|ec|e)\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))return false;
+    var m=System.Text.RegularExpressions.Regex.Match(arguments??"",@"(?:^|\s)-File\s+(?:""([^""]+)""|(\S+))\s*$",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    return m.Success&&string.Equals(System.IO.Path.GetFullPath(m.Groups[1].Success?m.Groups[1].Value:m.Groups[2].Value),System.IO.Path.GetFullPath(script),StringComparison.OrdinalIgnoreCase);
+   }catch(ArgumentException){return false;}
+  }
+  public static bool IsTunnelProcess(int pid,IEnumerable<ProcEvidence> processes,string script) {
+   var all=processes.GroupBy(p=>p.pid).ToDictionary(g=>g.Key,g=>g.First());
+   if(!all.TryGetValue(pid,out var ssh)||!string.Equals(ssh.name,"ssh.exe",StringComparison.OrdinalIgnoreCase))return false;
+   int current=ssh.parent;var visited=new HashSet<int>();
+   for(int i=0;i<8&&visited.Add(current)&&all.TryGetValue(current,out var ancestor);i++) {
+    if(string.Equals(ancestor.name,"powershell.exe",StringComparison.OrdinalIgnoreCase)||string.Equals(ancestor.name,"pwsh.exe",StringComparison.OrdinalIgnoreCase)) {
+     var m=System.Text.RegularExpressions.Regex.Match(ancestor.command??"",@"(?:^|\s)-File\s+(?:""([^""]+)""|(\S+))\s*$",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+     if(m.Success)try {if(string.Equals(System.IO.Path.GetFullPath(m.Groups[1].Success?m.Groups[1].Value:m.Groups[2].Value),System.IO.Path.GetFullPath(script),StringComparison.OrdinalIgnoreCase))return true;}catch(ArgumentException){}
+    }
+    current=ancestor.parent;
+   }
+   return false;
+  }
+  public static ProbeResult Evaluate(IEnumerable<ProcEvidence> processes,IEnumerable<TcpEvidence> sockets,string script=null) {
    var all=processes.ToDictionary(p=>p.pid);var tcp=sockets.Where(t=>t.established&&t.serverMatch).ToList();
    var candidates=new List<ProbeResult>();
    foreach(var ssh in all.Values.Where(p=>string.Equals(p.name,"ssh.exe",StringComparison.OrdinalIgnoreCase))) {
     if(!tcp.Any(t=>t.pid==ssh.pid))continue;
-    bool verified=false;int current=ssh.parent;var visited=new HashSet<int>();
-    for(int depth=0;depth<8&&visited.Add(current)&&all.TryGetValue(current,out var ancestor);depth++) {
-     string c=(ancestor.command??"").Replace('/','\\');
-     if(c.Contains(@"\muse-reach-tunnel\tunnel.ps1",StringComparison.OrdinalIgnoreCase)) {verified=true;break;}current=ancestor.parent;
-    }
+    bool verified=script!=null&&IsTunnelProcess(ssh.pid,all.Values,script);
     candidates.Add(new ProbeResult{pid=ssh.pid,parent=ssh.parent,identityVerified=verified,tcpEstablished=true});
    }
    return candidates.OrderByDescending(c=>c.identityVerified).FirstOrDefault()??new ProbeResult();
@@ -51,13 +67,35 @@ namespace MuseReach {
    foreach(var p in list.Where(p=>parents.Contains(p.pid)))p.command=Command(p.pid);
    return list;
   }
-  public static List<TcpEvidence> Sockets() {
-   var result=new List<TcpEvidence>();int len=0;uint rc=GetExtendedTcpTable(IntPtr.Zero,ref len,false,2,5,0);if(rc!=0&&rc!=122)throw new InvalidOperationException("TCP 表无法读取");
-   var b=Marshal.AllocHGlobal(len);try {if(GetExtendedTcpTable(b,ref len,false,2,5,0)!=0)throw new InvalidOperationException("TCP 表读取失败");int count=Marshal.ReadInt32(b);for(int i=0;i<count;i++){var row=IntPtr.Add(b,4+i*24);int state=Marshal.ReadInt32(row);uint addr=unchecked((uint)Marshal.ReadInt32(row,12));int port=((Marshal.ReadInt32(row,16)&255)<<8)|((Marshal.ReadInt32(row,16)>>8)&255);result.Add(new TcpEvidence{pid=Marshal.ReadInt32(row,20),serverMatch=new IPAddress(addr).ToString()==ExpectedServer&&port==22,established=state==5});}}finally{Marshal.FreeHGlobal(b);}return result;
+  public static List<TcpEvidence> Sockets(ConnectionSettings config=null) {
+   config??=new ConnectionSettings();config.Validate();var addresses=config.Configured?Dns.GetHostAddresses(config.relayHost).ToHashSet():new HashSet<IPAddress>();
+   var result=new List<TcpEvidence>();
+   foreach(int family in new[]{2,23}) {
+    int len=0;uint rc=GetExtendedTcpTable(IntPtr.Zero,ref len,false,family,5,0);if(rc==232)continue;if(rc!=0&&rc!=122)throw new InvalidOperationException("TCP 表无法读取");
+    var b=Marshal.AllocHGlobal(len);try {
+     if(GetExtendedTcpTable(b,ref len,false,family,5,0)!=0)throw new InvalidOperationException("TCP 表读取失败");
+     int count=Marshal.ReadInt32(b),stride=family==2?24:56;
+     for(int i=0;i<count;i++) {
+      var row=IntPtr.Add(b,4+i*stride);IPAddress addr;int state,port,pid;
+      if(family==2){state=Marshal.ReadInt32(row);addr=new IPAddress(unchecked((uint)Marshal.ReadInt32(row,12)));int raw=Marshal.ReadInt32(row,16);port=((raw&255)<<8)|((raw>>8)&255);pid=Marshal.ReadInt32(row,20);}
+      else {var bytes=new byte[16];Marshal.Copy(IntPtr.Add(row,24),bytes,0,16);addr=new IPAddress(bytes,unchecked((uint)Marshal.ReadInt32(row,40)));int raw=Marshal.ReadInt32(row,44);port=((raw&255)<<8)|((raw>>8)&255);state=Marshal.ReadInt32(row,48);pid=Marshal.ReadInt32(row,52);}
+      result.Add(new TcpEvidence{pid=pid,serverMatch=addresses.Contains(addr)&&port==config.relayPort,established=state==5});
+     }
+    }finally{Marshal.FreeHGlobal(b);}
+   }
+   return result;
   }
-  public static ProbeResult Capture() {
-   ProbeResult result;try{result=Evaluate(Processes(),Sockets());}catch(Exception ex){result=new ProbeResult{error=ex.Message};}
-   try {using var sc=new Process{StartInfo=new ProcessStartInfo("sc.exe","query sshd"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true}};sc.Start();var output=sc.StandardOutput.ReadToEndAsync();if(sc.WaitForExit(3000)){string text=output.GetAwaiter().GetResult();result.service=System.Text.RegularExpressions.Regex.IsMatch(text,@"\b4\s+RUNNING\b")?"运行中":System.Text.RegularExpressions.Regex.IsMatch(text,@"\b1\s+STOPPED\b")?"已停止":"无法检查";}else{try{sc.Kill();}catch{}}}catch{result.service="无法检查";}
+  public static ProbeResult Capture(ConnectionSettings config=null) {
+   config??=new ConnectionSettings();
+   if(!config.Configured)return new ProbeResult{error="尚未配置连接，请在设置页填写服务器与隧道信息"};
+   ProbeResult result;
+   try{result=Evaluate(Processes(),Sockets(config),config.tunnelScript);}catch(Exception){result=new ProbeResult{error="隧道证据读取失败，请检查配置、域名解析和访问权限"};}
+   try {
+    using var sc=new Process{StartInfo=new ProcessStartInfo("sc.exe","query sshd"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true}};
+    sc.Start();var output=sc.StandardOutput.ReadToEndAsync();var error=sc.StandardError.ReadToEndAsync();
+    if(sc.WaitForExit(3000)){string text=output.GetAwaiter().GetResult();error.GetAwaiter().GetResult();result.service=System.Text.RegularExpressions.Regex.IsMatch(text,@"\b4\s+RUNNING\b")?"运行中":System.Text.RegularExpressions.Regex.IsMatch(text,@"\b1\s+STOPPED\b")?"已停止":"无法检查";}
+    else {try{sc.Kill();}catch{}}
+   }catch{result.service="无法检查";}
    return result;
   }
  }

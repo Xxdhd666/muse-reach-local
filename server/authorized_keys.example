@@ -1,11 +1,6 @@
-# authorized_keys.example — 中转服务器上的限制式钥匙登记条目（模板）
-#
-# 把下面这一行追加到中转服务器上对应用户的 ~/.ssh/authorized_keys，
-# 并把 YOUR_PUBLIC_KEY_HERE 换成笔记本上生成的 SSH 公钥内容
-# （ssh-ed25519 开头的一整行，见 server/README.md 第 2 步）。
-#
-# 这一条只允许反向隧道：不给 shell（no-pty）、不给 agent/X11 转发，
-# 只允许在 127.0.0.1:2203 上监听反向隧道端口。
-# 注意：不要用 restrict 一刀切写法——个别 OpenSSH 版本不接受它；
-# 下面这种逐项写明的版本兼容性最好。
-no-pty,no-agent-forwarding,no-X11-forwarding,permitlisten="127.0.0.1:2203" ssh-ed25519 YOUR_PUBLIC_KEY_HERE muse-reach-laptop
+# Laptop key: ONLY for the dedicated reach-tunnel account.
+# sshd-reach.conf MUST also be installed; key options alone do not prohibit sessions.
+no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitlisten="127.0.0.1:2203" ssh-ed25519 YOUR_LAPTOP_TUNNEL_PUBLIC_KEY reach-tunnel
+
+# Cloud jump key: ONLY for a DIFFERENT reach-jump account.
+no-pty,no-agent-forwarding,no-X11-forwarding,no-user-rc,permitopen="127.0.0.1:2203" ssh-ed25519 YOUR_CLOUD_JUMP_PUBLIC_KEY reach-jump

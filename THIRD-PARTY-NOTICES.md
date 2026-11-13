@@ -54,9 +54,14 @@ SOFTWARE.
 
 ## Microsoft WebView2 (runtime components)
 
-`source/vendor/` contains the WebView2 managed assemblies and loader DLL
-(`Microsoft.Web.WebView2.Core.dll`, `Microsoft.Web.WebView2.WinForms.dll`,
-`WebView2Loader.dll`). These are Microsoft runtime components shipped with the
-application so it can run without a separate WebView2 SDK install; they remain
-subject to Microsoft's own license terms. The WebView2 Runtime itself must be
-installed on the target machine (see README).
+The application restores the Microsoft.Web.WebView2 SDK, pinned to 1.0.2903.40,
+from Microsoft's NuGet distribution. The transitive dependency graph is recorded
+in source/app/packages.lock.json. The SDK and its runtime components remain
+subject to Microsoft's license terms; they are not relicensed under this
+repository's MIT license. The WebView2 Runtime must be installed separately.
+
+## Test-only Node dependencies
+
+jsdom and Playwright are development dependencies, pinned in package-lock.json.
+Their licenses and transitive dependency notices remain in their respective
+packages. They are not bundled into the desktop application.

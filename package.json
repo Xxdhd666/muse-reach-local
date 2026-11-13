@@ -1,0 +1,12 @@
+{
+  "name": "muse-reach-checks",
+  "private": true,
+  "scripts": {
+    "test": "node source/tests/ui-reliability.cjs",
+    "test:browser": "node source/tests/browser-smoke.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0",
+    "playwright": "1.62.1"
+  }
+}

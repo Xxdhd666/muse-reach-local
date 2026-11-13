@@ -46,6 +46,8 @@ namespace MuseReach
         private System.Collections.Generic.List<Operation> _operations=new();
         private System.Collections.Generic.List<WorkFile> _files=new();
         private ChangeWatcher _watcher;
+        private ConnectionSettings _connection=new ConnectionSettings();
+        private string _connectionError;
         private WatchList _watch;
         private DateTimeOffset? _heartbeat;
         private string _page="muse";
@@ -86,11 +88,14 @@ namespace MuseReach
 
         public MainForm()
         {
-            Text = "Muse Reach v47";
+            Text = "Muse Reach v48";
             _anim=new AnimOverlay(this,_web);
             try {_settings=AppSettings.Load(Path.Combine(LocalOps.AppDir,"settings.json"));}
             catch(Exception ex){_settings=new AppSettings();LocalOps.AppendLog("error",ex.Message);_lastError=ex.Message;}
             if(AppSettings.ClearLegacyRecents(Path.Combine(LocalOps.AppDir,"settings.json")))LocalOps.AppendLog("settings","已清除旧版最近对话记录");_watch=new WatchList(Path.Combine(LocalOps.AppDir,"watch.json"));try{_settings.SetWebZoom(_settings.webZoom);}catch{_settings.webZoom=1;}
+            try { _connection=ConnectionSettings.Load(Path.Combine(LocalOps.AppDir,"connection.json")); }
+            catch(Exception){ _connectionError="连接配置无法读取，请在设置页检查后保存；原文件未覆盖"; }
+            try{_settings.SetConsoleScale(_settings.consoleScale);}catch{_settings.consoleScale=1;}
             InitTray();
             Resize += (s,e)=>{if(WindowState==FormWindowState.Minimized&&_settings.minimizeToTray)Hide();};
             FormClosing += (s,e)=>{SaveGeometry();if(!_exit&&_settings.minimizeToTray&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
@@ -476,6 +481,7 @@ namespace MuseReach
             _shell.CoreWebView2.NavigationCompleted+=(s,e)=>LocalOps.AppendLog("app","导航完成 success="+e.IsSuccess+" status="+e.WebErrorStatus);
             // The shell owns its native message bridge; no document injection is needed.
             _shell.CoreWebView2.WebMessageReceived += OnShellMessage;
+            _shell.ZoomFactor=_settings.consoleScale;
             _shell.CoreWebView2.NavigateToString(LoadShellHtml());
             LocalOps.AppendLog("app","已提交本地界面导航");
 
@@ -622,13 +628,13 @@ namespace MuseReach
         private async Task ControlConnection(){await SwitchWebAsync(false);ShowReach();PostToShell(new {type="open-connection"});}
         private async Task ExecuteConnectionAsync(string action){
             if(action!="disconnect"&&action!="reconnect")throw new ArgumentException("请选择断开或重新连接");
-            if(_controlBusy){PostToShell(new {type="error",text="上一项连接操作还没结束，请先等它完成"});return;}_controlBusy=true;
+            if(_controlBusy){PostToShell(new {type="control-state",busy=true});return;}_controlBusy=true;PostToShell(new{type="control-state",busy=true});
             try {
                 string result=await TunnelControl.RequestAsync(this,action,true);LocalOps.AppendLog("connection",result);
                 _probeAt=DateTime.MinValue;while(_polling)await Task.Delay(50);await PollAsync();
                 string text=result.Contains("取消")?"已取消授权，尚未确认通道状态发生变化。":result.Contains("失败")||result.Contains("无法")||result.Contains("未能")?"这次操作没有成功，请查看下方连接检查。":"系统已执行这次请求，请以下方连接检查为准。";
                 PostToShell(new {type="connection-result",text,summary=StatusPresentation.Conclusion(_probe),evidence=result+"\n"+StatusPresentation.Evidence(_probe)});
-            }finally{_controlBusy=false;}
+            }finally{_controlBusy=false;PostToShell(new{type="control-state",busy=false});}
         }
 
         private async Task NativeSmokeAsync(){
@@ -661,10 +667,8 @@ namespace MuseReach
 
         private void StartWatcher(){
             try{
-                var dirs=new System.Collections.Generic.List<string>{
-                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                    @"D:\写字机软件",
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),"Codex","2026-11-10","x-z","outputs")};
+                _watcher?.Dispose();
+                var dirs=_connection.watchedDirectories;
                 _watcher=new ChangeWatcher(dirs,(path,change)=>{try{BeginInvoke(new Action(()=>{if(_watch.Add(path,change,DateTimeOffset.Now)){_refreshFiles=true;_ = PollAsync();}}));}catch{}},RecentlyRecorded);
             }catch(Exception ex){LocalOps.AppendLog("error","目录盯梢启动失败："+ex.Message);}
         }
@@ -674,10 +678,10 @@ namespace MuseReach
             RefreshOsAnimations(); // v36：每轮询重读一次系统开关（1 秒兜底，覆盖漏掉的广播）
             try{
                 bool checkFiles=_refreshFiles;_refreshFiles=false;
-                await Task.Run(()=>{_operations=_data.ReadOperations();if(checkFiles)_files=_data.WorkFiles(_operations);_heartbeat=_data.ReadHeartbeat();});
-                if((DateTime.Now-_probeAt).TotalSeconds>=5){_probe=await Task.Run(TunnelProbe.Capture);_probeAt=DateTime.Now;}
+                await Task.Run(()=>{_operations=_data.ReadOperations();if(checkFiles||_page=="files")_files=_data.WorkFiles(_operations);_heartbeat=_data.ReadHeartbeat();});
+                if((DateTime.Now-_probeAt).TotalSeconds>=5){_probe=await Task.Run(()=>TunnelProbe.Capture(_connection));_probeAt=DateTime.Now;}
                 var health=ConsoleData.Health(_probe,_heartbeat,DateTimeOffset.Now);
-                PostToShell(new{type="snapshot",operations=_operations,events=_data.ProgramEvents(LocalOps.ReadLogTail(500)),files=_files,watch=_watch.Pending(),heartbeat=_heartbeat,heartbeatError=_data.heartbeatError,opsError=_data.opsError,health,probeEvidence=StatusPresentation.Evidence(_probe),evidence=_probe,settings=_settings,autoCollapsed=_autoCollapsed,osAnimationsEnabled=_osAnimationsEnabled,currentWebUrl=_web.CoreWebView2?.Source});
+                PostToShell(new{type="snapshot",operations=_operations,events=_data.ProgramEvents(LocalOps.ReadLogTail(500)),files=_files,watch=_watch.Pending(),heartbeat=_heartbeat,heartbeatError=_data.heartbeatError,opsError=_data.opsError,health,probeEvidence=StatusPresentation.Evidence(_probe),evidence=_probe,settings=_settings,autoCollapsed=_autoCollapsed,osAnimationsEnabled=_osAnimationsEnabled,currentWebUrl=_web.CoreWebView2?.Source,connection=_connection,connectionError=_connectionError,watcherStatus=_watcher?.Status,hotkeyRegistered=_hotkeyRegistered,controlBusy=_controlBusy});
                 _status.Text=health.label;
                 NotifyHidden(health); // v35：窗口藏进托盘时，连接断开/重连走系统通知
             }catch(Exception ex){if(_lastError!=ex.Message){_lastError=ex.Message;LocalOps.AppendLog("error",ex.Message);PostToShell(new{type="error",text="本地记录暂时无法读取，请稍后重试"});}}finally{_polling=false;}
@@ -709,6 +713,14 @@ namespace MuseReach
                 if(type=="page"){_page=r.GetProperty("page").GetString();if(!new[]{"muse","files","records","connection","security","settings"}.Contains(_page))throw new ArgumentException("页面不存在");if(_page=="files")_refreshFiles=true;await SwitchWebAsync(_page=="muse");await PollAsync();return;}
                 if(type=="refresh-files"){_refreshFiles=true;while(_polling)await Task.Delay(30);await PollAsync();return;}
                 if(type=="refresh-records"){while(_polling)await Task.Delay(30);await PollAsync();return;}
+                if(type=="connection-settings"){
+                    if(_controlBusy)throw new InvalidOperationException("连接操作进行中，请完成后再修改配置");
+                    var next=JsonSerializer.Deserialize<ConnectionSettings>(r.GetProperty("value").GetRawText());
+                    if(next==null)throw new ArgumentException("配置为空");next.Validate();
+                    next.Save(Path.Combine(LocalOps.AppDir,"connection.json"));_connection=next;_connectionError=null;
+                    StartWatcher();_probeAt=DateTime.MinValue;
+                    PostToShell(new{type="configuration-saved"});await PollAsync();return;
+                }
                 if(type=="file-action"){FileAction(r.GetProperty("action").GetString(),r.GetProperty("path").GetString());return;}
                 if(type=="watch-clear"){try{_watch.Clear();LocalOps.AppendLog("watch","已清空最近变化");}catch{} await PollAsync();return;}
                 if(type=="watch-toggle"){try{_settings.recentChangesCollapsed=!_settings.recentChangesCollapsed;_settings.Save(Path.Combine(LocalOps.AppDir,"settings.json"));}catch{} await PollAsync();return;}
@@ -716,7 +728,7 @@ namespace MuseReach
                 if(type=="minimize"){WindowState=FormWindowState.Minimized;return;}
                 if(type=="connection"){await ExecuteConnectionAsync(r.GetProperty("action").GetString());return;}
                 if(type=="save-start"){string url=_web.CoreWebView2?.Source;_settings.SetMuseUrl(url);_settings.Save(Path.Combine(LocalOps.AppDir,"settings.json"));PostToShell(new{type="notice",text="已保存。以后打开 Reach 会直接进入这条网页对话"});await PollAsync();return;}
-                if(type=="setting"){string key=r.GetProperty("key").GetString();if(key=="webZoom"){_settings.SetWebZoom(r.GetProperty("value").GetDouble());if(_web.CoreWebView2!=null)_web.ZoomFactor=_settings.webZoom;}else if(key=="theme"){_settings.SetTheme(r.GetProperty("value").GetString());_loadingOverlay?.ApplyTheme(_settings.theme);}else if(key=="sidebarSide")_settings.SetSidebarSide(r.GetProperty("value").GetString());else _settings.Set(key,r.GetProperty("value").GetBoolean(),SetStartup);if(key=="animationsEnabled")_captionStrip.AnimationsEnabled=EffectiveAnimations;if(key=="animationsEnabled"&&_loadingOverlay!=null)_loadingOverlay.AnimationsEnabled=EffectiveAnimations;_settings.Save(Path.Combine(LocalOps.AppDir,"settings.json"));ApplyHotkey();LocalOps.AppendLog("settings","已保存 "+key);PostToShell(new{type="notice",text="设置已保存"});await PollAsync();}
+                if(type=="setting"){string key=r.GetProperty("key").GetString();if(key=="webZoom"){_settings.SetWebZoom(r.GetProperty("value").GetDouble());if(_web.CoreWebView2!=null)_web.ZoomFactor=_settings.webZoom;}else if(key=="theme"){_settings.SetTheme(r.GetProperty("value").GetString());_loadingOverlay?.ApplyTheme(_settings.theme);}else if(key=="consoleScale"){_settings.SetConsoleScale(r.GetProperty("value").GetDouble());_shell.ZoomFactor=_settings.consoleScale;}else if(key=="sidebarSide")_settings.SetSidebarSide(r.GetProperty("value").GetString());else _settings.Set(key,r.GetProperty("value").GetBoolean(),SetStartup);if(key=="animationsEnabled")_captionStrip.AnimationsEnabled=EffectiveAnimations;if(key=="animationsEnabled"&&_loadingOverlay!=null)_loadingOverlay.AnimationsEnabled=EffectiveAnimations;_settings.Save(Path.Combine(LocalOps.AppDir,"settings.json"));ApplyHotkey();LocalOps.AppendLog("settings","已保存 "+key);PostToShell(new{type="notice",text="设置已保存"});await PollAsync();}
             }catch(Exception ex){LocalOps.AppendLog("error",ex.Message);PostToShell(new{type="error",text=ex.Message});}
         }
     }

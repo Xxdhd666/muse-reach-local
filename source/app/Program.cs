@@ -7,7 +7,7 @@ namespace MuseReach
         [STAThread]
         static void Main(string[] args)
         {
-            if(args.Length==2&&args[0]=="--tunnel-control"){try{Environment.Exit(TunnelControl.Elevated(args[1]));}catch{Environment.Exit(5);}return;}
+            if(args.Length==4&&args[0]=="--tunnel-control"&&args[2]=="--connection"){try{Environment.Exit(TunnelControl.Elevated(args[1],args[3]));}catch{Environment.Exit(5);}return;}
             using var singleton=new System.Threading.Mutex(true,"Local\\MuseReach-v11",out bool first);
             // v34：重复启动不再静默退出——先通知已运行的实例把窗口带到前台
             // （RegisterWindowMessage 广播，见 MainForm.BringToFrontMessage），再退出。
