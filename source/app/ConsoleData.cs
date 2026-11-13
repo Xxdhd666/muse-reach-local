@@ -1,0 +1,37 @@
+using System;using System.Collections.Generic;using System.Globalization;using System.IO;using System.Linq;using System.Security.Cryptography;using System.Text;using System.Text.Json;
+namespace MuseReach {
+ public sealed class Operation {public string id{get;set;} public DateTimeOffset? ts{get;set;} public string kind{get;set;} public string summary{get;set;} public string[] files{get;set;}=Array.Empty<string>();public int? exit{get;set;}public string result{get;set;}="unknown";public string cmd{get;set;}public string category{get;set;}="operation";}
+ public sealed class WorkFile {public string path{get;set;}public string name{get;set;}public string directory{get;set;}public string kind{get;set;}public DateTimeOffset? ts{get;set;}public string state{get;set;}public string result{get;set;} public string source{get;set;} }
+ public sealed class HealthStatus {public string label{get;set;}public bool reconnect{get;set;}public string note{get;set;} }
+ public sealed class ConsoleData {
+  readonly string dir;public string opsError{get;private set;}public string heartbeatError{get;private set;}public ConsoleData(string directory){dir=directory;}
+  static string S(JsonElement r,string k,string fallback="")=>r.TryGetProperty(k,out var x)&&x.ValueKind==JsonValueKind.String?x.GetString():fallback;
+  static bool FileKind(string k)=>new[]{"file-create","file-modify","file-delete","file-read"}.Contains(k);
+  public List<Operation> ReadOperations(){var rows=new List<Operation>();opsError=null;string f=Path.Combine(dir,"ops.jsonl");
+   try{using var stream=new FileStream(f,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);using var reader=new StreamReader(stream);string line;int index=0;while((line=reader.ReadLine())!=null){index++;try{using var doc=JsonDocument.Parse(line);var r=doc.RootElement;if(r.ValueKind!=JsonValueKind.Object)continue;if(r.TryGetProperty("v",out var v)&&(v.ValueKind!=JsonValueKind.Number||!v.TryGetInt32(out int version)||version!=1))continue;
+    string kind=S(r,"kind","exec"),result=S(r,"result","unknown");if(result!="success"&&result!="failure")result="unknown";
+    DateTimeOffset? ts=DateTimeOffset.TryParse(S(r,"ts"),CultureInfo.InvariantCulture,DateTimeStyles.None,out var stamp)?stamp:null;
+    var files=FileKind(kind)&&r.TryGetProperty("files",out var a)&&a.ValueKind==JsonValueKind.Array?a.EnumerateArray().Where(x=>x.ValueKind==JsonValueKind.String).Select(x=>x.GetString()).Where(x=>!string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray():Array.Empty<string>();
+    int? exit=r.TryGetProperty("exit",out var e)&&e.ValueKind==JsonValueKind.Number&&e.TryGetInt32(out int code)?code:null;
+    rows.Add(new Operation{id=S(r,"id","line-"+index),ts=ts,kind=kind,summary=S(r,"summary","本机操作（未提供摘要）"),files=files,exit=exit,result=result,cmd=S(r,"cmd")});
+   }catch(JsonException){} }
+   }catch(FileNotFoundException){}catch(DirectoryNotFoundException){}catch(Exception ex)when(ex is IOException||ex is UnauthorizedAccessException){opsError="操作记录暂时无法读取";}
+   return rows.GroupBy(x=>x.id).Select(g=>g.OrderByDescending(x=>x.ts).First()).OrderByDescending(x=>x.ts).ToList();
+  }
+  public List<WorkFile> WorkFiles(IEnumerable<Operation> operations){var rows=new Dictionary<string,WorkFile>(StringComparer.OrdinalIgnoreCase);foreach(var op in operations.OrderByDescending(o=>o.ts)){foreach(var raw in op.files){try{if(!Path.IsPathFullyQualified(raw))continue;string p=Path.GetFullPath(raw);if(rows.ContainsKey(p))continue;string state;try{var attr=File.GetAttributes(p);state=(attr&FileAttributes.Directory)!=0?"不是文件":"在";}catch(FileNotFoundException){state="已不在";}catch(DirectoryNotFoundException){state="已不在";}catch(UnauthorizedAccessException){state="暂时无法确认";}catch(IOException){state="暂时无法确认";}
+     rows[p]=new WorkFile{path=p,name=Path.GetFileName(p),directory=Path.GetDirectoryName(p),kind=op.kind,ts=op.ts,state=state,result=op.result,source=SourceOf(op)};}catch(ArgumentException){}catch(NotSupportedException){}}}return rows.Values.OrderByDescending(x=>x.ts).ToList();}
+  public static string SourceOf(Operation op)=>op!=null&&!string.IsNullOrEmpty(op.summary)&&op.summary.StartsWith("补记：",StringComparison.Ordinal)?"已确认由 Muse 操作（补记）":op!=null&&!string.IsNullOrEmpty(op.summary)&&op.summary.StartsWith("用户确认",StringComparison.Ordinal)?"用户确认":"已确认由 Muse 操作";
+  public static void AppendOperation(string dir,Operation op){try{string f=Path.Combine(dir,"ops.jsonl");var line=JsonSerializer.Serialize(new{v=1,id=op.id,ts=op.ts?.ToString("o"),kind=op.kind,summary=op.summary,files=op.files??Array.Empty<string>(),exit=op.exit,result=op.result??"unknown",cmd=op.cmd??""},new JsonSerializerOptions{Encoder=System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping});using var stream=new FileStream(f,FileMode.Append,FileAccess.Write,FileShare.ReadWrite);using var w=new StreamWriter(stream,new UTF8Encoding(false));w.WriteLine(line);}catch{}}
+  public static List<WorkFile> FilterFiles(IEnumerable<WorkFile> rows,string filter,DateTimeOffset now)=>rows.Where(x=>filter=="today"?x.ts?.ToLocalTime().Date==now.ToLocalTime().Date:filter=="week"?x.ts.HasValue&&x.ts.Value>=now.AddDays(-7)&&x.ts<=now:true).ToList();
+  public DateTimeOffset? ReadHeartbeat(){heartbeatError=null;string f=Path.Combine(dir,"heartbeat.json");try{using var doc=JsonDocument.Parse(File.ReadAllText(f));var r=doc.RootElement;if(r.ValueKind!=JsonValueKind.Object||!r.TryGetProperty("v",out var v)||v.ValueKind!=JsonValueKind.Number||!v.TryGetInt32(out int ver)||ver!=1)throw new InvalidDataException();string s=S(r,"ts");if(!System.Text.RegularExpressions.Regex.IsMatch(s,@"(Z|[+-]\d{2}:\d{2})$")||!DateTimeOffset.TryParse(s,out var ts))throw new InvalidDataException();return ts;}catch(FileNotFoundException){return null;}catch(DirectoryNotFoundException){return null;}catch(Exception ex)when(ex is IOException||ex is UnauthorizedAccessException||ex is JsonException){heartbeatError="最近到达记录暂时无法读取";return null;}}
+  public static HealthStatus Health(ProbeResult p,DateTimeOffset? heartbeat,DateTimeOffset now){
+   if(p.error!=null||p.service=="无法检查")return new HealthStatus{label="状态待确认",note="本机检查未完成，不把查不到当成中断"};
+   if(!p.tcpEstablished||p.service!="运行中")return new HealthStatus{label="通道中断",reconnect=true,note="本机服务或连接证据有异常；Muse 是否接手以对话为准"};
+   if(!heartbeat.HasValue)return new HealthStatus{label="本机通道正常，Muse 到达待确认",note="暂无心跳记录；不据此判断 Muse 已经到达"};
+   double age=(now-heartbeat.Value).TotalSeconds;if(age< -5)return new HealthStatus{label="状态待确认",note="到达记录的时间在将来，请核对时钟"};
+   if(age>90)return new HealthStatus{label="疑似假死",reconnect=true,note="本机连接证据正常，但 Muse 超过90秒没有更新到达记录"};
+   return new HealthStatus{label="通道正常",note="本机连接与最近到达记录均正常；任务是否接手仍以对话为准"};
+  }
+  public List<Operation> ProgramEvents(string log){return log.Split('\n').Where(x=>!string.IsNullOrWhiteSpace(x)).Select((x,i)=>{string[] p=x.Split(" | ",3,StringSplitOptions.None);DateTimeOffset? ts=p.Length>0&&DateTimeOffset.TryParse(p[0],out var t)?t:null;string kind=p.Length>1?p[1]:"event";string text=p.Length>2?p[2]:x;string summary=kind switch {"app"=>"Reach 运行状态更新","settings"=>"已保存程序设置","connection"=>"连接控制有新结果","error"=>"程序遇到问题","local-query"=>"查看了本地状态",_=>"程序事件"};return new Operation{id="event-"+i,category="program",kind=kind,ts=ts,summary=summary,result=kind=="error"?"failure":"unknown",cmd=text};}).ToList();}
+ }
+}
