@@ -588,9 +588,9 @@ namespace MuseReach
         }
         private void SyncLoadingOverlayBounds(){
             if(_loadingOverlay==null||_webBounds.Width<=0||_webBounds.Height<=0)return;
-            _loadingOverlay.Bounds=_webBounds;
+            if(!_loadingOverlay.Bounds.Equals(_webBounds))_loadingOverlay.Bounds=_webBounds;
             // 动画进行时 AnimOverlay 的截图在最上层，别把加载层顶到它前面。
-            if(_anim==null||!_anim.Active)_loadingOverlay.BringToFront();
+            if(_loadingOverlay.Visible&&(_anim==null||!_anim.Active))_loadingOverlay.BringToFront();
         }
         // v32：Muse 页加载态。WebView2 的导航事件按官方文档主帧与子帧都会触发，
         // 没有只限主帧的开关；用 NavigationId 关联一次导航的开始与完成，
@@ -620,7 +620,10 @@ namespace MuseReach
             else{LocalOps.AppendLog("error","Muse 网页加载失败："+e.WebErrorStatus);try{_loadingOverlay?.ShowError();}catch{}}
         }
         private void PositionWeb(JsonElement r){double viewport=r.GetProperty("viewport").GetDouble();if(viewport<=0)return;double scale=_shell.ClientSize.Width/viewport;
-            _webBounds=new Rectangle(_shell.Left+(int)Math.Round(r.GetProperty("x").GetDouble()*scale),_shell.Top+(int)Math.Round(r.GetProperty("y").GetDouble()*scale),(int)Math.Round(r.GetProperty("width").GetDouble()*scale),(int)Math.Round(r.GetProperty("height").GetDouble()*scale));
+            var newBounds=new Rectangle(_shell.Left+(int)Math.Round(r.GetProperty("x").GetDouble()*scale),_shell.Top+(int)Math.Round(r.GetProperty("y").GetDouble()*scale),(int)Math.Round(r.GetProperty("width").GetDouble()*scale),(int)Math.Round(r.GetProperty("height").GetDouble()*scale));
+            bool boundsChanged=!newBounds.Equals(_webBounds)||!newBounds.Equals(_web.Bounds);bool visibilityChanged=_web.Visible!=_webLoaded;
+            if(!boundsChanged&&!visibilityChanged&&(_anim==null||!_anim.Active))return;
+            _webBounds=newBounds;
             SyncLoadingOverlayBounds();
             if(_anim!=null&&_anim.Active){if(_animKind=="flip")_anim.GlideTo(_webBounds,MotionTokens.ControlNormalMs);else _anim.Follow(_webBounds);return;}
             if(_page=="muse"&&_web.CoreWebView2!=null){_web.Bounds=_webBounds;_web.Visible=_webLoaded;_web.BringToFront();SyncLoadingOverlayBounds();}
